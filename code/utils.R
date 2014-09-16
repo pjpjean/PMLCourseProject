@@ -56,3 +56,29 @@ learningCurves <- function(trainingSet, validationSet, modelCall,
   return(lc)
   
 }
+
+classSubset <- function(dataset, classes) {
+  dataset[,which(sapply(dataset, class) %in% classes)]
+}
+
+classVars <- function(dataset, classes) {
+  names(dataset)[which(sapply(dataset, class) %in% classes)]
+}
+
+print.cor <- function(cm, min.coef=0, max.coef=1, digits=2, lower.t=FALSE) {
+  cm[abs(cm) < min.coef | abs(cm) > max.coef | cm == 1] <- NA
+  if (lower.t) {
+    cm[row(cm) < col(cm)] <- NA
+    cm <- cm[-1,]
+  }
+  # remove rows and columns with all NA's
+  remove <- which(apply(cm, 1, function(row) all(is.na(row))))
+  if (length(remove)>0)
+    cm <- cm[-remove,]
+  
+  remove <- which(apply(cm, 2, function(col) all(is.na(col))))
+  if (length(remove)>0)
+    cm <- cm[,-remove]
+  
+  print(cm, digits=digits, na.print = ".")
+}
