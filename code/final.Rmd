@@ -1,0 +1,133 @@
+---
+title: "Course Project Analysis"
+author: "pjpjean"
+output: html_document
+---
+
+## Initializing
+```{r initialize}
+library(caret)
+library(ggplot2)
+library(randomForest)
+setwd("~/GitHub/PMLCourseProject")
+source("code\\utils.R")
+```
+
+# Read datasets
+```{r read-datasets, cache=TRUE}
+pml <- read.csv("data\\pml-training.csv",
+                stringsAsFactors = FALSE,
+                na.strings = c("","NA", "#DIV/0!"))
+pml.submit <- read.csv("data\\pml-testing.csv",
+                     stringsAsFactors = FALSE,
+                     na.strings = c("","NA", "#DIV/0!"))
+```
+
+
+# Examining variables
+```{r examine-variables}
+table(sapply(pml, class))
+# check strings
+head(pml[names(which(sapply(pml, class)=="character"))])
+# check logicals
+summary(pml[names(which(sapply(pml, class)=="logical"))])
+# check NA's left
+# remove all variables with more than 90% NA's
+na.count <- sapply(pml, function(x) sum(is.na(x)))
+na.count[na.count/nrow(pml) > .9]
+summary(na.count)
+hist(na.count)
+hist(na.count[na.count/nrow(pml) > .9])
+table(na.count)
+table(na.count[na.count/nrow(pml) > .9])
+
+# it seems that num_window is an id
+table(pml$user_name, pml$num_window)
+nrow(unique(pml[c("user_name", "num_window")]))
+length(unique(pml$num_window))
+```
+
+# Some transformations
+```{r transform}
+# transform some variables
+pml <- within(pml, {
+  classe <- factor(classe)
+  new_window <- as.numeric(new_window == "yes") # convert to logic (0 or 1)
+})
+
+pml.submit <- within(pml.submit, {
+  # classe <- factor(classe, levels = levels(pml$classe))
+  new_window <- as.numeric(new_window == "yes") # convert to logic (0 or 1)
+})
+
+table(sapply(pml, class))
+head(pml)
+```
+
+this data would likely benefit of time series analysis since activities
+have a logical connection (suggested variables: previous_activity, etc.)
+Unfortunately, test set observations are isolated cases and thus have no
+time series context (well, technically they have, because they have
+timestamp, num_window, etc., but as they are isolated, they shouldn't)
+
+user_name, otherwise, although is not informative as such, might
+give us indirect information on age, height, weigth of our subjects.
+user_name is a proxy for age, height, weigth ...
+
+## Tidy dataset
+```{r tidy-dataset}
+# categorize variables
+id.vars <- c("X", "num_window")
+rem.vars <- c("raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp")
+na.vars <- names(which(sapply(pml, function(x) sum(is.na(x))/length(x)) > 0.9))
+
+y.var <- "classe"
+x.vars <- names(pml)[!names(pml) %in% c(id.vars, rem.vars, na.vars, y.var)]
+d.vars <- c(x.vars, y.var)
+```
+
+# Split dataset
+We'll divide the dataset in three: training, validation and test set.
+training will be used to train the models and 
+validation will be used to choose the best model.
+test will be used to estimate selected model's performance.
+
+```{r}
+set.seed(40187)
+inTrain <- createDataPartition(pml$classe, p=0.6, list=FALSE)
+pml.train <- pml[inTrain, d.vars]
+
+inTest <- createDataPartition(pml[-inTrain,]$classe, p=0.5, list=FALSE)
+pml.validation <- pml[-inTrain, d.vars][-inTest, ]
+pml.test <- pml[-inTrain, d.vars][inTest, ]
+```
+
+
+## random forest
+In random forests, there is no need for cross-validation or a separate test
+set to get an unbiased estimate of the test set error. It is estimated
+internally, during the run, as follows:
+```{r train-randomforest, cache=TRUE}
+system.time(
+  rf.basemodel <- train(classe ~ ., 
+                        data = pml.train, 
+                        method = "rf", 
+                        trControl = trainControl(
+                          method="oob"),
+                        tuneLength = 5)
+)
+```
+
+
+``` {r}
+rf.basemodel
+rf.basemodel$finalModel
+
+pred.basemodel <- predict(rf.basemodel,newdata = pml.validation)
+confusionMatrix(pml.validation$classe, pred.basemodel)
+varImp(rf.basemodel)
+
+pml_write_files(as.character(predict(rf.basemodel, newdata=pml.submit)),
+                "rf-mtry_16")
+```
+

@@ -18,8 +18,8 @@ pml <- read.csv("data\\pml-training.csv",
                 stringsAsFactors = FALSE,
                 na.strings = c("","NA", "#DIV/0!"))
 pml.submit <- read.csv("data\\pml-testing.csv",
-                       stringsAsFactors = FALSE,
-                       na.strings = c("","NA", "#DIV/0!"))
+                     stringsAsFactors = FALSE,
+                     na.strings = c("","NA", "#DIV/0!"))
 
 table(sapply(pml, class))
 # character   integer   logical   numeric 
@@ -47,7 +47,7 @@ pml <- within(pml, {
   classe <- factor(classe)
   new_window <- as.numeric(new_window == "yes") # convert to logic (0 or 1)
 })
-              
+
 pml.submit <- within(pml.submit, {
   # classe <- factor(classe, levels = levels(pml$classe))
   new_window <- as.numeric(new_window == "yes") # convert to logic (0 or 1)
@@ -68,7 +68,9 @@ length(unique(pml$num_window))
 # time series context (well, technically they have, because they have
 # timestamp, num_window, etc., but as they are isolated, they shouldn't)
 
-# user_name, 
+# user_name, otherwise, although is not informative as such, might
+# give us indirect information on age, height, weigth of our subjects.
+# user_name is a proxy for age, height, weigth ...
 
 # categorize variables
 id.vars <- c("X", "num_window")
@@ -76,7 +78,7 @@ rem.vars <- c("raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp")
 #all.na.vars <- names(which(sapply(pml, function(x) all(is.na(x)))))
 na.vars <- names(which(sapply(pml, function(x) sum(is.na(x))/length(x)) > 0.9))
 #almost.na.vars <- almost.na.vars[!almost.na.vars %in% all.na.vars]
-  
+
 y.var <- "classe"
 x.vars <- names(pml)[!names(pml) %in% c(id.vars, rem.vars, na.vars, y.var)]
 d.vars <- c(x.vars, y.var)
@@ -89,30 +91,34 @@ source("code\\utils.R")
 set.seed(40187)
 inTrain <- createDataPartition(pml$classe, p=0.6, list=FALSE)
 pml.train <- pml[inTrain, d.vars]
-#
-inCV <- createDataPartition(pml[-inTrain,]$classe, p=0.5, list=FALSE)
-pml.cv <- pml[-inTrain, d.vars][inCV, ]
-pml.test <- pml[-inTrain, d.vars][-inCV, ]
+
+inTest <- createDataPartition(pml[-inTrain,]$classe, p=0.5, list=FALSE)
+pml.validation <- pml[-inTrain, d.vars][-inTest, ]
+pml.test <- pml[-inTrain, d.vars][inTest, ]
 
 
 ## random forest
 # In random forests, there is no need for cross-validation or a separate test
 # set to get an unbiased estimate of the test set error. It is estimated
 # internally, during the run, as follows:
-rf.basemodel <- train(classe ~ ., 
-                  data = pml.train, 
-                  method = "rf", 
-                  trControl = trainControl(
-                    method="oob"),
-                  tuneLength = 5)
+system.time(
+  rf.basemodel <- train(classe ~ ., 
+                        data = pml.train, 
+                        method = "rf", 
+                        trControl = trainControl(
+                          method="oob"),
+                        tuneLength = 5)
+)
 rf.basemodel
 rf.basemodel$finalModel
 
-pred.basemodel <- predict(rf.basemodel,newdata = pml.cv)
-confusionMatrix(pml.cv$classe, pred.basemodel)
+pred.basemodel <- predict(rf.basemodel,newdata = pml.validation)
+confusionMatrix(pml.validation$classe, pred.basemodel)
 varImp(rf.basemodel)
 
-predict(rf.basemodel, newdata=pml.submit)
+pml_write_files(
+  as.character(predict(rf.basemodel, newdata=pml.submit))
+  ,"rf-mtry_16")
 
 
 # test learning curves with multinomial logistic regression
@@ -120,8 +126,9 @@ library(nnet)
 table(sapply(pml.train, class))
 
 m1 <- multinom(classe ~ ., pml.train, family="binomial")
+nnet.train <- preProcess(pml.train[sample(nrow(pml.train), 1000),])
 lc <- learningCurves(
-  pml.train[sample(nrow(pml.train), 1000),], pml.cv, 
+  pml.train[sample(nrow(pml.train), 1000),], pml.validation, 
   start = 200,
   modelCall = function(d) multinom(classe ~ ., d, family="binomial"),
   modelErrorCall = function(fit, d) {
