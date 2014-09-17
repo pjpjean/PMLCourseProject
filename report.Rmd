@@ -1,0 +1,340 @@
+---
+title: "Humam Activity Recognition (HAR)"
+subtitle: "A Machine Learning Approach"
+output:
+  html_document:
+    theme: journal
+    highlight: tango
+---
+### Coursera's Practical Machine Learning class
+#### September 2014
+\  
+\  
+\  
+
+### Executive Summary
+
+This report provides a Machine Learning (ML) approach to the process of recognizing the physical activity performed by a person based on sensors attached to his/her body, called Human Activity Recognition (HAR). The original data used in our analysis were collected by **[1] Ugulino et al. (2012)** and downloaded from **[2] Coursera's website**. It consists of measurements taken by 4 sensors during different physical activities performed by 6 subjects. We build 4 predictive models using 3 different techniques -- **Penalized Multinomial Log-linear Regression** (2 models), **Random Forest** and **Support Vector Machine with Radial Basis Kernel** -- and tune their parameters using resampling methods like cross-validation (except for Random Forest, which has an internal bootstrap error estimate). We assess their out-of-sample error rate testing their predictive performance on a holdout dataset, only once for each final model. The best model, a Random Forest with `mtry=16`, with **..... % [CI ..., ...] accuracy estimate**, is then used to predict the 20 test cases available in **[3]**.
+
+```{r setup, echo=FALSE, include=FALSE}
+library(knitr)
+opts_chunk$set(tidy=TRUE, tidy.opts=list(arrow=TRUE, blank=FALSE))
+
+# get the default output hook
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    hook_output(x, options) # pass to default hook
+  }
+  else {
+    x <- unlist(stringr::str_split(x, "\n"))
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- c(head(x, lines), "...\n")
+    }
+    # paste these lines together
+    x <- paste(x, collapse = "\n")
+    hook_output(x, options)
+  }
+})
+
+# Helper function to make full paths
+wd <- function(relPath) {paste0("~/GitHub/PMLCourseProject", "/", relPath)}
+```
+
+```{r initialize, message=FALSE, warning=FALSE, echo=FALSE}
+library(caret)
+library(randomForest)
+source(wd("code\\utils.R"))
+```
+
+```{r draft-flag, echo=FALSE, cache=TRUE}
+#--------------------------------------------------------------------------
+# I set 'draft' to TRUE while writing draft versions of this report in
+# order to avoid time consuming commands. In that case, model building and
+# tuning will use a smaller dataset (10% of original) and faster validation
+# methods.
+#
+# Set it to FALSE in final version.
+#---------------------------------------------------------------------------
+draft <- TRUE
+```
+
+### Exploratory analysis
+
+The data provided for training **[2]** consists of 19,622 observations of 160 variables. Observations are not uniformly distributed between the 6 subjects and 5 activities: almost 20% of observations were taken on `adelmo` subject (expected: 16.6%) and almost 30% refers to `A` activity (expected: 20%).
+
+#### Reading datasets
+```{r read-datasets, cache=TRUE}
+pml <- read.csv(wd("data/pml-training.csv"),
+                stringsAsFactors = FALSE,
+                na.strings = c("","NA", "#DIV/0!"))
+pml.submit <- read.csv(wd("data/pml-testing.csv"),
+                     stringsAsFactors = FALSE,
+                     na.strings = c("","NA", "#DIV/0!"))
+```
+
+#### Frequency distribution
+
+```{r}
+addmargins(table(pml$user_name, pml$classe))
+round(addmargins(prop.table(table(pml$user_name, pml$classe))) * 100, 1)
+```
+
+#### Examining variables
+
+We noticed that 2 of the 4 character variables and all 6 logical ones could be transformed into a more apropriate type or removed altogether. They are:
+
+- `cvtd_timestamp`: formatted timestamp, redudant because there is a numerical one.
+
+- `new_window`: logical, coded as a *yes/no* string.
+
+- `kurtosis_yaw_belt`, `skewness_yaw_belt`, `kurtosis_yaw_dumbbell`, `skewness_yaw_dumbbell`, `kurtosis_yaw_forearm` and `skewness_yaw_forearm`: interpreted as logical, but with no informative value (all `NA`'s).
+
+```{r examine-variables, output.lines = 24}
+table(sapply(pml, class))
+# check strings
+head(classSubset(pml, "character"))
+# check logicals
+summary(classSubset(pml, "logical"))
+```
+
+\   
+We also noticed that there are 100 variables (including these 6 logical) with more than 90% of their values missing. They are likely to be non-informative (considering the sample size) and could be removed. This removal will be done later when we select the final variables of our models dataset.
+```{r examine-variables-2, echo=-4}
+# check variables with more than 90% NA's
+na.count <- sapply(pml, function(x) sum(is.na(x)))
+sum(na.count/nrow(pml) > .9)
+hist(na.count/nrow(pml), main="Histogram of relative frequency of NA's",
+     xlab="Relative frequency of NA's", ylab="Number of variables")
+table(na.count)
+```
+
+\   
+Apart from `X`, id variable in each observation, `num_window` seems to be an id as well. There are 858 different values for `num_window` and 858 unique combinations of `user_name-num_window`. They are candidates to be removed.
+
+```{r examine-variables-3, output.lines = 24}
+print(table(pml$user_name, pml$num_window), zero.print=".")
+nrow(unique(pml[c("user_name", "num_window")]))
+length(unique(pml$num_window))
+```
+
+#### Transforming variables
+We decided to transform 2 variables only, `classe`, the outcome variable, into a factor, and `new_window` into a binary numeric variable (*0/1*), instead of character *yes/no*.
+```{r transform}
+# transform some variables
+pml <- within(pml, {
+  classe <- factor(classe)
+  new_window <- as.numeric(new_window == "yes") # convert to logic (0 or 1)
+})
+
+pml.submit <- within(pml.submit, {
+  new_window <- as.numeric(new_window == "yes") # convert to logic (0 or 1)
+})
+```
+
+### Preparing the datasets
+This data could benefit from time series analysis since different activities could be part of usual sequences, in which case, new features like, for instance, `previous_activity`, could be of some value. Unfortunately, the 20 test cases on which we have to make predictions are isolated and were not sampled with time series in mind. So, we decided to remove all timestamp variables.
+
+The `user_name` variable, otherwise, although is not informative as such, might
+act as a proxy variable, giving us indirect information related to the subjects features like genre, age, height and weight. We decided to keep it.
+
+#### Selecting variables
+```{r tidy-dataset}
+# variables to remove
+id.vars <- c("X", "num_window")
+rem.vars <- c("raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp")
+na.vars <- names(which(sapply(pml, function(x) sum(is.na(x))/length(x)) > 0.9))
+# variables to keep
+y.var <- "classe"
+x.vars <- names(pml)[!names(pml) %in% c(id.vars, rem.vars, na.vars, y.var)]
+d.vars <- c(x.vars, y.var)
+```
+
+#### Splitting training and test datasets
+We split the dataset in two, training and test set, in a 70/30 ratio. The training dataset will be used in the process of building the models and tuning their parameters. The test set will be kept aside and used to choose our final model.
+
+```{r}
+set.seed(40187)
+inTrain <- createDataPartition(pml$classe, p=0.7, list=FALSE)
+pml.train <- pml[inTrain, d.vars]
+pml.test <- pml[-inTrain, d.vars]
+table(sapply(pml.train, class))
+```
+```{r, echo=FALSE, dependson='draft-flag'}
+if (draft) {
+  pml.train <- pml.train[sample(nrow(pml.train), nrow(pml.train) * 0.1), ]
+  pml.test <- pml.test[sample(nrow(pml.test), nrow(pml.test) * 0.1), ]
+}
+```
+
+### Training and tuning
+We used 3 different techniques to build our models: 
+
+- Penalized Multinomial Log-linear Regression (2 models)
+
+- Random Forest
+
+- Support Vector Machine with Radial Basis Kernel
+
+We used 3-times-repeated 10-fold cross-validation to tune all models, except Random Forest. According to the algorithm's authors **[4]**, "in random forests, there is no need for cross-validation or a separate test set to get an unbiased estimate of the test set error. It is estimated internally, during the run."
+
+The holdout test set was used only once for each algorithm's best model in order to get a more reliable estimate of their out-of-sample error rate and choose the final model.
+
+#### Default options
+```{r train-options-default}
+default.trControl <- trainControl(method="repeatedcv", number=10, repeats=3)
+```
+
+``` {r train-options, dependson='draft-flag', echo=FALSE}
+if (draft) {
+  default.trControl <- trainControl(method="cv", number = 10)
+} else {
+  default.trControl <- trainControl(method="repeatedcv", number=10, repeats=3)
+}
+```
+#### Penalized Multinomial Log-linear Regression
+
+```{r train-multinomial, cache=TRUE, results='hide', message=FALSE, warning=FALSE, dependson='draft-flag'}
+set.seed(43443)
+mnom.trControl <- default.trControl
+mnom.time <- system.time(
+  mnom.basemodel <- train(classe ~ ., 
+                          data = pml.train, 
+                          method = "multinom", 
+                          trControl = mnom.trControl,
+                          tuneLength = 5)
+)
+```
+
+```{r results-multinomial, R.options=list(digits=7)}
+mnom.time
+mnom.basemodel
+```
+```{r results-multinomial-1b}
+t(coef(mnom.basemodel$finalModel))
+```
+
+#### Penalized Multinomial Log-linear Regression with Low Correlated Features
+In this model variation, we remove highly correlated variables hoping that accuracy won't be much damaged.
+
+##### Correlation matrix
+```{r correlations}
+cor.cutoff <- 0.75
+print.cor(cor(classSubset(pml.train, c("numeric", "integer"))), min.coef = cor.cutoff, lower.t = TRUE)
+```
+
+```{r train-multinomial-2, cache=TRUE, results='hide', message=FALSE, warning=FALSE, dependson='draft-flag'}
+num.vars <- classVars(pml.train, c("numeric", "integer"))
+cor.vars <- num.vars[findCorrelation(
+  cor(classSubset(pml.train, c("numeric", "integer"))), 
+  cutoff = cor.cutoff)]
+lowcor.vars <- names(pml.train)[!d.vars %in% cor.vars]
+
+mnom.lowcortime <- system.time(
+  mnom.lowcormodel <- train(classe ~ ., 
+                          data = pml.train[,lowcor.vars], 
+                          method = "multinom", 
+                          trControl = mnom.trControl,
+                          tuneLength = 5)
+)
+```
+
+```{r results-multinomial-2, R.options=list(digits=7)}
+mnom.lowcortime
+mnom.lowcormodel
+```
+```{r results-multinomial-2b}
+t(coef(mnom.lowcormodel$finalModel))
+```
+
+#### Random forest
+```{r train-randomforest, cache=TRUE, results='hide', dependson='draft-flag'}
+set.seed(43443)
+rf.trControl <- trainControl(method="oob")
+
+rf.time <- system.time(
+  rf.basemodel <- train(classe ~ ., 
+                        data = pml.train, 
+                        method = "rf", 
+                        trControl = rf.trControl,
+                        tuneLength = 5)
+)
+```
+
+``` {r results-randomforest, R.options=list(digits=7)}
+rf.time
+rf.basemodel
+rf.basemodel$finalModel
+```
+
+#### Support Vector Machine with Radial Basis Kernel
+```{r train-svmRadialCost, cache=TRUE, results='hide', message=FALSE, warning=FALSE, dependson='draft-flag'}
+set.seed(43443)
+svm.trControl <- default.trControl
+svm.time <- system.time(
+  svm.basemodel <- train(classe ~ ., 
+                         data = pml.train, 
+                         method = "svmRadialCost",
+                         preProc = c("center", "scale"),
+                         trControl = svm.trControl,
+                         tuneLength = 9)
+)
+```
+
+``` {r results-svmRadialCost, message=FALSE, warning=FALSE, R.options=list(digits=7)}
+svm.time
+svm.basemodel
+svm.basemodel$finalModel
+```
+
+### Selecting final model
+In this last step of our model building approach, we select the final model based on each algorithm's best model performance on the holdout test set. As you can see, the top performer algorithm was Random Forest, with `mtry`, the number of variables randomly sampled as candidates at each split, equal to 16. The model's accuracy estimate was ..... % [CI ..., ...], in other words, an estimated out-of-sample error rate of ....%  [CI ..., ...].
+
+#### Testing best models
+```{r predictions, message=FALSE, warning=FALSE}
+sel.models <- list(mnom = mnom.basemodel, 
+                   mnom.lowcor = mnom.lowcormodel, 
+                   rf = rf.basemodel, 
+                   svm = svm.basemodel)
+test.pred <- predict(sel.models, newdata = pml.test)
+```
+#### Assessing out-of-sample error
+```{r eout, message=FALSE, warning=FALSE}
+accuracy <- sapply(test.pred, pml.test$classe, FUN=function(pred, obs) {
+  cm <- confusionMatrix(pred, obs)
+  round(cm$overall[1:4] * 100, 1)
+  })
+print(t(accuracy))
+```
+
+#### Final model
+```{r}
+fm.name <- which.max(accuracy[1, ])
+names(fm.name)
+final.model <- sel.models[[fm.name]]
+```
+
+### Predicting test cases
+Finally, we pick the top performer algorithm on the test set and use it to predict the test cases. These predictions will be submitted to Coursera's website.
+
+```{r submit}
+pred.cases <- as.character(predict(final.model, newdata=pml.submit))
+pred.cases
+```
+
+#### Writing files to submit
+```{r}
+pml_write_files(pred.cases, "final-model")
+```
+
+### References
+
+[1] Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. **Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements**. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6. http://groupware.les.inf.puc-rio.br/work.jsf?p1=10335
+
+[2] https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+[3] https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+[4] http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr

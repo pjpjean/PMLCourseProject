@@ -3,20 +3,43 @@ title: "Course Project Analysis"
 author: "pjpjean"
 output: html_document
 ---
+```{r setup, echo=FALSE}
+opts_chunk$set(tidy=TRUE, tidy.opts=list(arrow=TRUE, blank=FALSE))
 
-## Initializing
-```{r initialize}
+# get the default output hook
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    hook_output(x, options) # pass to default hook
+  }
+  else {
+    x <- unlist(stringr::str_split(x, "\n"))
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- c(head(x, lines), "...\n")
+    }
+    # paste these lines together
+    x <- paste(x, collapse = "\n")
+    hook_output(x, options)
+  }
+})
+```
+
+# Initializing
+```{r initialize, message=FALSE, warning=FALSE, echo=-4}
 library(caret)
 library(ggplot2)
 library(randomForest)
 
 wd <- function(relPath) {
-  paste0("~/GitHub/PMLCourseProject", "/", relPath)
+  paste0("~/Pessoais/Coursera/PMLCourseProject", "/", relPath)
 }
 source(wd("code\\utils.R"))
+```
 
+```{r draft-flag, echo=FALSE}
 draft <- FALSE
-
 ```
 
 # Read datasets
@@ -30,14 +53,13 @@ pml.submit <- read.csv(wd("data/pml-testing.csv"),
 ```
 
 # Examining variables
-```{r examine-variables}
+```{r examine-variables, output.lines = 24}
 table(sapply(pml, class))
 # check strings
-head(pml[names(which(sapply(pml, class)=="character"))])
+head(classSubset(pml, "character"))
 # check logicals
-summary(pml[names(which(sapply(pml, class)=="logical"))])
-# check NA's left
-# remove all variables with more than 90% NA's
+summary(classSubset(pml, "logical"))
+# will remove all variables with more than 90% NA's
 na.count <- sapply(pml, function(x) sum(is.na(x)))
 na.count[na.count/nrow(pml) > .9]
 summary(na.count)
@@ -66,7 +88,7 @@ pml.submit <- within(pml.submit, {
 })
 
 table(sapply(pml, class))
-head(pml)
+#head(pml, 1)
 ```
 
 this data would likely benefit of time series analysis since activities
@@ -102,7 +124,7 @@ inTrain <- createDataPartition(pml$classe, p=0.7, list=FALSE)
 pml.train <- pml[inTrain, d.vars]
 pml.test <- pml[-inTrain, d.vars]
 ```
-```{r, echo=FALSE}
+```{r, echo=FALSE, dependson='draft-flag'}
 if (draft) {
   pml.train <- pml.train[sample(nrow(pml.train), nrow(pml.train) * 0.1), ]
   pml.test <- pml.test[sample(nrow(pml.test), nrow(pml.test) * 0.1), ]
@@ -113,7 +135,7 @@ if (draft) {
 print.cor(cor(classSubset(pml.train, c("numeric", "integer"))), min.coef = 0.6, lower.t = TRUE)
 ```
 
-``` {r train-options}
+``` {r train-options, dependson='draft-flag'}
 if (draft) {
   default.trControl <- trainControl(method="cv", number = 10)
 } else {
@@ -121,52 +143,56 @@ if (draft) {
 }
 ```
 
-
-```{r train-multinomial, cache=TRUE, results='hide'}
+```{r train-multinomial, cache=TRUE, results='hide', message=FALSE, warning=FALSE, dependson='draft-flag'}
 set.seed(43443)
 mnom.trControl <- default.trControl
-system.time(
+mnom.time <- system.time(
   mnom.basemodel <- train(classe ~ ., 
                           data = pml.train, 
                           method = "multinom", 
                           trControl = mnom.trControl,
                           tuneLength = 5)
-  )
-
-mnom.basemodel
-mnom.basemodel$finalModel
-
+)
 ```
 
-```{r train-multinomial-2, cache=TRUE, results='hide'}
+```{r results-multinomial}
+mnom.time
+mnom.basemodel
+t(coef(mnom.basemodel$finalModel))
+```
+
+```{r train-multinomial-2, cache=TRUE, results='hide', message=FALSE, warning=FALSE, dependson='draft-flag'}
 num.vars <- classVars(pml.train, c("numeric", "integer"))
 cor.vars <- num.vars[findCorrelation(
   cor(classSubset(pml.train, c("numeric", "integer"))), 
   cutoff = .75)]
 lowcor.vars <- names(pml.train)[!d.vars %in% cor.vars]
 
-system.time(
+mnom.lowcortime <- system.time(
   mnom.lowcormodel <- train(classe ~ ., 
                           data = pml.train[,lowcor.vars], 
                           method = "multinom", 
                           trControl = mnom.trControl,
                           tuneLength = 5)
-  )
+)
+```
 
+```{r results-multinomial-2}
+mnom.lowcortime
 mnom.lowcormodel
 mnom.lowcormodel$finalModel
-
 ```
 
 ## random forest
 In random forests, there is no need for cross-validation or a separate test
 set to get an unbiased estimate of the test set error. It is estimated
 internally, during the run, as follows:
-```{r train-randomforest, cache=TRUE, results='hide'}
+
+```{r train-randomforest, cache=TRUE, results='hide', dependson='draft-flag'}
 set.seed(43443)
 rf.trControl <- trainControl(method="oob")
 
-system.time(
+rf.time <- system.time(
   rf.basemodel <- train(classe ~ ., 
                         data = pml.train, 
                         method = "rf", 
@@ -175,8 +201,8 @@ system.time(
 )
 ```
 
-
-``` {r}
+``` {r results-randomforest}
+rf.time
 rf.basemodel
 rf.basemodel$finalModel
 
@@ -184,14 +210,14 @@ rf.basemodel$finalModel
 #confusionMatrix(pml.validation$classe, pred.basemodel)
 varImp(rf.basemodel)
 
-pml_write_files(as.character(predict(rf.basemodel, newdata=pml.submit)),
-                "rf-mtry_16")
+#pml_write_files(as.character(predict(rf.basemodel, newdata=pml.submit)),
+#                "rf-mtry_16")
 ```
 
-```{r train-svmRadialCost, cache=TRUE, results='hide'}
+```{r train-svmRadialCost, cache=TRUE, results='hide', message=FALSE, warning=FALSE, dependson='draft-flag'}
 set.seed(43443)
 svm.trControl <- default.trControl
-system.time(
+svm.time <- system.time(
   svm.basemodel <- train(classe ~ ., 
                          data = pml.train, 
                          method = "svmRadialCost",
@@ -201,7 +227,21 @@ system.time(
 )
 ```
 
-
-``` {r}
+``` {r results-svmRadialCost, message=FALSE, warning=FALSE}
+svm.time
 svm.basemodel
 svm.basemodel$finalModel
+```
+
+```{r predictions, message=FALSE, warning=FALSE}
+sel.models <- list(mnom = mnom.basemodel, 
+                   mnom.lc = mnom.lowcormodel, 
+                   rf = rf.basemodel, 
+                   svm = svm.basemodel)
+test.pred <- predict(sel.models, newdata = pml.test)
+t(sapply(test.pred, pml.test$classe, FUN=function(pred, obs) {
+  cm <- confusionMatrix(pred, obs)
+  round(cm$overall[1:4] * 100, 1)
+  }))
+```
+

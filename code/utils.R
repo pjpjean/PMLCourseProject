@@ -80,5 +80,10 @@ print.cor <- function(cm, min.coef=0, max.coef=1, digits=2, lower.t=FALSE) {
   if (length(remove)>0)
     cm <- cm[,-remove]
   
-  print(cm, digits=digits, na.print = ".")
+  # if output is broken in chunks (table is larger than console width)
+  # remove rows with all NA's in each chunk
+  output <- capture.output(print(cm, digits=digits, na.print = "."))
+  pos.cols <- regexpr("\\s", output)
+  output.cols <- gsub("\\.|\\s", "", substring(output, pos.cols))
+  cat(output[output.cols != ""], sep="\n")  
 }
