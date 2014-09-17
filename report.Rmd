@@ -14,7 +14,7 @@ output:
 
 ### Executive Summary
 
-This report provides a Machine Learning (ML) approach to the process of recognizing the physical activity performed by a person based on sensors attached to his/her body, called Human Activity Recognition (HAR). The original data used in our analysis were collected by **[1] Ugulino et al. (2012)** and downloaded from **[2] Coursera's website**. It consists of measurements taken by 4 sensors during different physical activities performed by 6 subjects. We build 4 predictive models using 3 different techniques -- **Penalized Multinomial Log-linear Regression** (2 models), **Random Forest** and **Support Vector Machine with Radial Basis Kernel** -- and tune their parameters using resampling methods like cross-validation (except for Random Forest, which has an internal bootstrap error estimate). We assess their out-of-sample error rate testing their predictive performance on a holdout dataset, only once for each final model. The best model, a Random Forest with `mtry=16`, with **..... % [CI ..., ...] accuracy estimate**, is then used to predict the 20 test cases available in **[3]**.
+This report provides a Machine Learning (ML) approach to the process of recognizing the physical activity performed by a person based on sensors attached to his/her body, called Human Activity Recognition (HAR). The original data used in our analysis were collected by **[1] Ugulino et al. (2012)** and downloaded from **[2] Coursera's website**. It consists of measurements taken by 4 sensors during different physical activities performed by 6 subjects. We build 4 predictive models using 3 different techniques -- **Penalized Multinomial Log-linear Regression** (2 models), **Random Forest** and **Support Vector Machine with Radial Basis Kernel** -- and tune their parameters using resampling methods like cross-validation (except for Random Forest, which has an internal bootstrap error estimate). We assess their out-of-sample error rate testing their predictive performance on a holdout dataset, only once for each final model. The best model, a Random Forest (parameter `mtry=16`) with **99.5% [99.3%, 99.7%] accuracy estimate** is then used to predict the 20 test cases available in **[3]**.
 
 ```{r setup, echo=FALSE, include=FALSE}
 library(knitr)
@@ -58,7 +58,7 @@ source(wd("code\\utils.R"))
 #
 # Set it to FALSE in final version.
 #---------------------------------------------------------------------------
-draft <- TRUE
+draft <- FALSE
 ```
 
 ### Exploratory analysis
@@ -290,10 +290,10 @@ svm.basemodel$finalModel
 ```
 
 ### Selecting final model
-In this last step of our model building approach, we select the final model based on each algorithm's best model performance on the holdout test set. As you can see, the top performer algorithm was Random Forest, with `mtry`, the number of variables randomly sampled as candidates at each split, equal to 16. The model's accuracy estimate was ..... % [CI ..., ...], in other words, an estimated out-of-sample error rate of ....%  [CI ..., ...].
+In this last step of our model building approach, we select the final model based on each algorithm best model's performance on the holdout test set. As you can see, the top performer algorithm was *Random Forest*, with `mtry`, the number of variables randomly sampled as candidates at each split, equal to `16`. The model's accuracy estimate was **99.5% [CI 99.3%, 99.7%]**, in other words, an estimated out-of-sample error rate of **0.5% [CI 0.3%, 0.7%]**.
 
 #### Testing best models
-```{r predictions, message=FALSE, warning=FALSE}
+```{r predictions, message=FALSE, warning=FALSE, cache=TRUE, dependson='draft-flag'}
 sel.models <- list(mnom = mnom.basemodel, 
                    mnom.lowcor = mnom.lowcormodel, 
                    rf = rf.basemodel, 
@@ -301,7 +301,7 @@ sel.models <- list(mnom = mnom.basemodel,
 test.pred <- predict(sel.models, newdata = pml.test)
 ```
 #### Assessing out-of-sample error
-```{r eout, message=FALSE, warning=FALSE}
+```{r eout, message=FALSE, warning=FALSE, cache=TRUE, dependson='draft-flag'}
 accuracy <- sapply(test.pred, pml.test$classe, FUN=function(pred, obs) {
   cm <- confusionMatrix(pred, obs)
   round(cm$overall[1:4] * 100, 1)
@@ -338,3 +338,6 @@ pml_write_files(pred.cases, "final-model")
 [3] https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
 
 [4] http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr
+
+[5] Kuhn, M. **Building Predictive Models in R Using the caret Package**. 
+Journal of Statistical Software Vol. 28, Issue 5, 1-26. Nov 2008. http://www.jstatsoft.org/v28/i05
